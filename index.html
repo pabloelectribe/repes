@@ -108,6 +108,16 @@ input[type=search]{flex:1;min-width:0}
 .legend i.dash{background:repeating-linear-gradient(90deg,var(--muted) 0 4px,transparent 4px 7px)}
 .pin{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font:700 12px var(--display);color:#fff;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}
 .pin.start{background:#1d1b19}
+.pin.here{background:#fff;border:5px solid var(--lane);width:22px;height:22px;margin:2px}
+.arrow{width:16px;height:16px;font-size:11px;line-height:16px;text-align:center;color:#fff;text-shadow:0 0 3px #000,0 0 2px #000}
+.scrub{position:absolute;left:12px;right:12px;bottom:calc(26px + env(safe-area-inset-bottom,0px));z-index:500;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 10px;box-shadow:0 2px 8px rgba(0,0,0,.15);max-width:560px;margin-inline:auto}
+.scrubinfo{display:flex;flex-direction:column;font-size:.85rem;line-height:1.35}
+.scrubinfo i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+.scrubinfo .nx{color:var(--muted)}
+.scrubrow{display:flex;align-items:center;gap:8px;margin-top:4px}
+.scrubrow input{flex:1;min-width:0;accent-color:var(--tartan);height:28px}
+.scrubrow .btn{padding:4px 12px;font-size:1.1rem;line-height:1.2}
+.has-scrub .status{bottom:calc(128px + env(safe-area-inset-bottom,0px))}
 .pin.gira{background:var(--tartan);width:30px;height:30px;font-size:15px}
 .pin.rep{background:var(--tartan);width:20px;height:20px;font-size:10px}
 .leaflet-container{font:inherit}
@@ -119,15 +129,23 @@ footer{font-size:.78rem;color:var(--muted)}
 </head>
 <body>
 <div class="app">
-  <div class="mapwrap">
+  <div class="mapwrap" id="mapwrap">
     <div id="map" aria-label="Mapa de la ruta"></div>
     <div class="legend" aria-hidden="true">
       <span><i class="k-work"></i>Series</span>
       <span><i class="k-recover"></i>Recuperación</span>
       <span><i class="k-warm"></i>Calent. / soltura</span>
-      <span><i class="dash"></i>Vuelta</span>
+      <span><i class="dash"></i>Vuelta (segmentada)</span>
     </div>
     <div class="status" id="status">Toca el mapa para fijar la partida</div>
+    <div class="scrub" id="scrub" hidden>
+      <div class="scrubinfo" id="scrubInfo"></div>
+      <div class="scrubrow">
+        <button class="btn" id="scrubPrev" type="button" aria-label="Punto anterior">‹</button>
+        <input type="range" id="scrubRange" min="0" max="1000" step="1" value="0" aria-label="Recorrer la ruta">
+        <button class="btn" id="scrubNext" type="button" aria-label="Punto siguiente">›</button>
+      </div>
+    </div>
   </div>
 
   <main class="panel">
@@ -185,6 +203,10 @@ footer{font-size:.78rem;color:var(--muted)}
         <input type="search" id="q" placeholder="Dirección o lugar" aria-label="Buscar lugar">
         <button class="btn" type="submit">Buscar</button>
       </form>
+      <div class="tabs" role="tablist" aria-label="Tipo de ruta" style="margin:10px 0 0">
+        <button role="tab" id="modeOab" aria-selected="true">Ida y vuelta</button>
+        <button role="tab" id="modeLoop" aria-selected="false">Circuito</button>
+      </div>
       <div class="row" style="margin-top:8px">
         <button class="btn" id="geo" type="button">Usar mi ubicación</button>
         <button class="btn primary" id="gen" type="button">Generar rutas</button>
@@ -454,8 +476,9 @@ const DIRS=['N','NE','E','SE','S','SO','O','NO'];
 const dirName=b=>DIRS[Math.round(b/45)%8];
 
 /* ---------- Servicios ---------- */
-async function routeFoot(a,b){
-  const url=`https://routing.openstreetmap.de/routed-foot/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`;
+const routeFoot=(a,b)=>routeVia([a,b]);
+async function routeVia(pts){
+  const url=`https://routing.openstreetmap.de/routed-foot/route/v1/driving/${pts.map(p=>p[1]+','+p[0]).join(';')}?overview=full&geometries=geojson`;
   const j=await routeQueued(url); if(!j.routes||!j.routes.length) throw new Error('sin ruta');
   return j.routes[0].geometry.coordinates.map(([lo,la])=>[la,lo]);
 }
@@ -486,13 +509,27 @@ async function elevations(pts){
 
 /* ---------- Métricas ---------- */
 function turnsAlong(path,c){
-  // rumbo cada ~25 m, cuenta cambios > 55° separados al menos 40 m; devuelve distancias de cada giro
+  // rumbo cada ~25 m; un giro es un cambio > 55° separado al menos 40 m del anterior
   const step=25, total=c[c.length-1], hs=[];
   for(let d=0;d+step<=total;d+=step) hs.push([d,bearing(pointAt(path,c,d),pointAt(path,c,d+step))]);
   const turns=[]; let last=-1e9;
-  for(let i=1;i<hs.length;i++){let diff=Math.abs(hs[i][1]-hs[i-1][1]);if(diff>180)diff=360-diff;
-    if(diff>55&&hs[i][0]-last>40){turns.push(hs[i][0]);last=hs[i][0]}}
+  for(let i=1;i<hs.length;i++){const diff=((hs[i][1]-hs[i-1][1]+540)%360)-180;
+    if(Math.abs(diff)>55&&hs[i][0]-last>40){turns.push({d:hs[i][0],side:Math.abs(diff)>150?'u':diff>0?'der':'izq'});last=hs[i][0]}}
   return turns;
+}
+// Una opción de ruta: `full` es el recorrido completo. type 'oab' = ida y vuelta (path = la ida), 'loop' = circuito.
+function mkOab(path,extra){
+  const c=cum(path), half=c[c.length-1], full=path.concat(path.slice(0,-1).reverse());
+  return {type:'oab',path,brg:bearing(path[0],path[path.length-1]),full,fc:cum(full),half,total:half*2,...extra};
+}
+function mkLoop(full,extra){
+  const fc=cum(full);let far=0,fd=0;full.forEach((p,i)=>{const d=hav(full[0],p);if(d>fd){fd=d;far=i}});
+  return {type:'loop',brg:bearing(full[0],full[far]),full,fc,total:fc[fc.length-1],...extra};
+}
+function optionTurns(o){
+  if(o.type==='loop') return turnsAlong(o.full,o.fc);
+  const t=turnsAlong(o.path,cum(o.path)), flip={izq:'der',der:'izq',u:'u'};
+  return [...t,{d:o.half,side:'u'},...t.map(x=>({d:o.total-x.d,side:flip[x.side]})).reverse()];
 }
 
 /* ---------- Estado / mapa ---------- */
@@ -508,7 +545,7 @@ let routeLayer=L.layerGroup().addTo(map);
 const $=id=>document.getElementById(id);
 const status=t=>{$('status').textContent=t};
 
-function setStart(ll){start=[ll.lat,ll.lng];startMarker.setLatLng(start);routeLayer.clearLayers();options=[];chosen=null;
+function setStart(ll){start=[ll.lat,ll.lng];startMarker.setLatLng(start);routeLayer.clearLayers();options=[];chosen=null;genId++;$('gen').disabled=false;hideScrub();
   $('sec-opts').hidden=true;$('sec-cues').hidden=true;status('Partida fijada · toca "Generar rutas"');}
 
 /* ---------- Render del entreno ---------- */
@@ -543,89 +580,184 @@ async function buildOption(brg,half){
   }
   const L=c[c.length-1];
   if(L<half*0.9) return null;
-  if(L>half){path=slice(path,c,0,half);c=cum(path);}
-  return {brg,path,c,len:c[c.length-1]};
+  if(L>half) path=slice(path,c,0,half);
+  return mkOab(path);
 }
+// Circuito: partida → dos puntos a ±30° del rumbo → partida; ajusta el radio hasta calzar con la distancia.
+async function buildLoop(brg,D){
+  let r=D/4, path=null, L=0;
+  for(let k=0;k<3;k++){
+    path=await routeVia([start,dest(start,brg-30,r),dest(start,brg+30,r),start]); L=cum(path).pop();
+    if(L>=D*0.98&&L<=D*1.05) break;
+    r*=(D*1.01)/Math.max(L,100);
+  }
+  if(L<D*0.95||L>D*1.1) return null;
+  return mkLoop(path);
+}
+// Circuito con dos rutas habituales: sale por una, cruza por calles hasta la otra y vuelve por ella.
+async function buildPair(A,B,D){
+  const ca=cum(A.path), cb=cum(B.path), max=Math.min(A.len,B.len);
+  let x=Math.min(max,D*0.4), full=null, L=0;
+  for(let k=0;k<3;k++){
+    const pa=slice(A.path,ca,0,x), pb=slice(B.path,cb,0,x);
+    const conn=await routeFoot(pa[pa.length-1],pb[pb.length-1]);
+    full=[...pa,...conn.slice(1,-1),...pb.reverse()]; L=cum(full).pop();
+    if(Math.abs(L-D)<D*0.03) break;
+    const nx=Math.min(max,Math.max(500,x+(D-L)/2)); if(Math.abs(nx-x)<30) break; x=nx;
+  }
+  if(L<D*0.95||L>D*1.1) return null;
+  return mkLoop(full,{pair:[A,B]});
+}
+function habitPairs(){
+  const near=habits.filter(g=>!g.loop&&hav(g.path[0],start)<400), pairs=[];
+  for(let i=0;i<near.length;i++)for(let j=i+1;j<near.length;j++){
+    let ang=Math.abs(bearing(near[i].path[0],near[i].end)-bearing(near[j].path[0],near[j].end));if(ang>180)ang=360-ang;
+    if(ang>=25&&ang<=160) pairs.push([near[i],near[j]]);
+  }
+  return pairs.sort((p,q)=>(q[0].count+q[1].count)-(p[0].count+p[1].count)).slice(0,2);
+}
+const mode=()=>$('modeLoop').getAttribute('aria-selected')==='true'?'loop':'oab';
 let genId=0;
 async function scoreOption(o,D){
-  o.turns=turnsAlong(o.path,o.c);
-  // giros que caen dentro de una serie (en ida o en vuelta)
-  o.workTurns=0;for(const t of o.turns)for(const s of segs)if(s.kind==='work'&&((t>=s.a&&t<=s.b)||(D-t>=s.a&&D-t<=s.b)))o.workTurns++;
-  try{const n=50,pts=[];for(let i=0;i<n;i++)pts.push(pointAt(o.path,o.c,o.len*i/(n-1)));
+  o.D=D; o.turns=optionTurns(o);
+  // giros que caen dentro de una serie
+  o.workTurns=o.turns.filter(t=>t.side!=='u'&&segs.some(s=>s.kind==='work'&&t.d>=s.a&&t.d<=s.b)).length;
+  try{
+    const [p,c]=o.type==='oab'?[o.path,cum(o.path)]:[o.full,o.fc], n=o.type==='oab'?50:80, pts=[];
+    for(let i=0;i<n;i++)pts.push(pointAt(p,c,c[c.length-1]*i/(n-1)));
     const el=await elevations(pts);let up=0,down=0;for(let i=1;i<el.length;i++){const d=el[i]-el[i-1];if(d>0)up+=d;else down-=d}
-    o.gain=Math.round(up+down); o.netUp=Math.round(el[el.length-1]-el[0]);}catch{o.gain=null}
-  o.score=(o.gain??30)+o.workTurns*6+o.turns.length*1.5;
+    o.gain=Math.round(o.type==='oab'?up+down:up);   // subida acumulada de todo el recorrido
+  }catch{o.gain=null}
+  o.score=(o.gain??30)+o.workTurns*6+o.turns.length*0.75+Math.abs(o.total-D)/D*300;
 }
 async function generate(){
   if(!segs.length){refresh();if(!segs.length)return;}
-  const D=segs[segs.length-1].b, half=D/2, id=++genId;
-  $('gen').disabled=true; routeLayer.clearLayers(); options=[]; chosen=null; status('Buscando rutas…');
+  const D=segs[segs.length-1].b, half=D/2, id=++genId, loop=mode()==='loop';
+  $('gen').disabled=true; routeLayer.clearLayers(); options=[]; chosen=null; hideScrub();
+  status(loop?'Buscando circuitos… puede tardar unos 15 s':'Buscando rutas…');
   try{
-    // primero tus rutas habituales que parten cerca y alcanzan para el entreno: no dependen del ruteo
-    const mine=habitOptions(half);
+    // primero tus rutas habituales que parten cerca y calzan con el entreno: no dependen del ruteo
+    const mine=habitOptions(D,loop);
     if(mine.length){
       await Promise.all(mine.map(o=>scoreOption(o,D))); if(id!==genId) return;
       options=mine; renderOptions(); choose(0);
     }
-    const brgs=[0,60,120,180,240,300];
-    const res=await Promise.allSettled(brgs.map(b=>buildOption(b,half))); if(id!==genId) return;
-    let opts=res.filter(r=>r.status==='fulfilled'&&r.value).map(r=>r.value);
-    // descarta opciones cuyo punto de giro queda casi en el mismo lugar
-    const uniq=[];for(const o of opts){const end=o.path[o.path.length-1];if(!uniq.some(u=>hav(u.path[u.path.length-1],end)<300))uniq.push(o)}
-    if(!uniq.length&&!mine.length) throw new Error('No encontré rutas peatonales desde ese punto. Prueba moviendo la partida a una calle o parque.');
+    const jobs=loop?[...habitPairs().map(([a,b])=>buildPair(a,b,D)),...[30,120,210,300].map(b=>buildLoop(b,D))]
+                   :[0,60,120,180,240,300].map(b=>buildOption(b,half));
+    const res=await Promise.allSettled(jobs); if(id!==genId) return;
+    const opts=res.filter(r=>r.status==='fulfilled'&&r.value).map(r=>r.value);
+    // descarta opciones cuyo punto medio queda casi en el mismo lugar
+    const mid=o=>pointAt(o.full,o.fc,o.total/2), uniq=[];
+    for(const o of opts){if(!uniq.some(u=>hav(mid(u),mid(o))<300))uniq.push(o)}
+    if(!uniq.length&&!mine.length) throw new Error(loop?'No pude armar un circuito desde ese punto. Prueba moviendo la partida o con ida y vuelta.':'No encontré rutas peatonales desde ese punto. Prueba moviendo la partida a una calle o parque.');
     if(!mine.length) status('Calculando desnivel…');
     await Promise.all(uniq.map(o=>scoreOption(o,D))); if(id!==genId) return;
-    uniq.sort((a,b)=>a.score-b.score); options=[...mine,...uniq]; renderOptions();
+    uniq.sort((a,b)=>(b.pair?1:0)-(a.pair?1:0)||a.score-b.score); options=[...mine,...uniq]; renderOptions();
     if(mine.length) $('opts').querySelectorAll('.opt').forEach(b=>b.setAttribute('aria-pressed',options[+b.dataset.i]===chosen)); else choose(0);
   }catch(e){if(id===genId) status(e.message||'Error al generar la ruta');}
   finally{if(id===genId) $('gen').disabled=false}
 }
+const SIDE={der:'a la derecha',izq:'a la izquierda',u:'media vuelta'};
+function optionTitle(o){
+  const hab=g=>g.label?esc(g.label.replace(/^(hasta|por) /,'')):dirName(bearing(g.path[0],g.end));
+  if(o.pair) return `Circuito con tus rutas: sales por ${hab(o.pair[0])}, vuelves por ${hab(o.pair[1])}`;
+  if(o.habit) return `${o.type==='loop'?'Tu circuito habitual':'Tu ruta habitual'}${o.habit.label?' '+esc(o.habit.label):''} (${o.habit.count}×)`;
+  return (o.type==='loop'?'Circuito hacia el ':'Hacia el ')+dirName(o.brg);
+}
 function renderOptions(){
   $('sec-opts').hidden=false;
+  const firstCalc=options.findIndex(o=>!o.habit&&!o.pair);
   $('opts').innerHTML=options.map((o,i)=>`<button class="opt" type="button" data-i="${i}" aria-pressed="false">
-    <span class="dir">${dirName(o.brg)}</span>
-    <span class="meta">${o.habit?`Tu ruta habitual${o.habit.label?' '+esc(o.habit.label):''} (${o.habit.count}×)`:'Hacia el '+dirName(o.brg)} · desnivel <b>${o.gain==null?'s/d':o.gain+' m'}</b><br>${o.workTurns} giros en series · ${o.turns.length} en total</span>
-    ${o.habit?'<span class="tag">Tuya</span>':options[i-1]?.habit||i===0?'<span class="tag">Mejor</span>':'<span></span>'}</button>`).join('');
+    <span class="dir">${o.type==='loop'?'⟳':dirName(o.brg)}</span>
+    <span class="meta">${optionTitle(o)}${o.type==='loop'?' · '+fmtKm(o.total)+' km':''} · desnivel <b>${o.gain==null?'s/d':o.gain+' m'}</b><br>${o.turns.filter(t=>t.side!=='u').length} giros · ${o.workTurns} durante las series</span>
+    ${o.habit||o.pair?'<span class="tag">Tuya</span>':i===firstCalc?'<span class="tag">Mejor</span>':'<span></span>'}</button>`).join('');
   $('opts').querySelectorAll('.opt').forEach(b=>b.onclick=()=>choose(+b.dataset.i));
 }
 function choose(i){chosen=options[i];$('opts').querySelectorAll('.opt').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.i===i));drawChosen();}
 
-function locate(d,D,o){const out=d<=D/2;return {pt:pointAt(o.path,o.c,out?d:D-d),out}}
+// Desplaza una línea unos píxeles a la derecha del sentido de avance: así la ida y la vuelta
+// (o dos pasadas por la misma calle) quedan lado a lado, como carriles, en vez de taparse.
+function lane(pts,px){
+  if(pts.length<2) return pts;
+  const z=map.getZoom(), q=pts.map(p=>map.project(p,z)), out=[];
+  for(let i=0;i<q.length;i++){
+    const a=q[Math.max(0,i-1)], b=q[Math.min(q.length-1,i+1)];
+    let dx=b.x-a.x, dy=b.y-a.y; const n=Math.hypot(dx,dy)||1; dx/=n; dy/=n;
+    const ll=map.unproject(L.point(q[i].x-dy*px,q[i].y+dx*px),z); out.push([ll.lat,ll.lng]);
+  }
+  return out;
+}
+function drawLines(){
+  const o=chosen; if(!o||!segs.length) return;
+  const D=segs[segs.length-1].b, T=o.total, oab=o.type==='oab', half=oab?o.half:Infinity, OFF=4;
+  const part=(a,b)=>lane(slice(o.full,o.fc,a,b),OFF);
+  routeLayer.clearLayers();
+  if(T>D+30) L.polyline(part(D,T),{color:color('other'),weight:3,opacity:.5,dashArray:'2 7'}).addTo(routeLayer);
+  for(const s of segs){
+    const col=color(s.kind), a=Math.min(s.a,T), b=Math.min(s.b,T); if(b<=a) continue;
+    if(a<half) L.polyline(part(a,Math.min(b,half)),{color:col,weight:5,opacity:.95,lineCap:'butt'}).addTo(routeLayer);
+    if(b>half) L.polyline(part(Math.max(a,half),b),{color:col,weight:5,opacity:.95,dashArray:'9 5',lineCap:'butt'}).addTo(routeLayer);
+  }
+  if(!oab) for(const f of [.12,.37,.62,.87]){const d=T*f, p=posAt(o,d), q=posAt(o,d+20);
+    L.marker(p,{interactive:false,icon:L.divIcon({className:'',html:`<div class="arrow" style="transform:rotate(${bearing(p,q)}deg)">▲</div>`,iconSize:null,iconAnchor:[8,8]})}).addTo(routeLayer)}
+  let rep=0;
+  for(const s of segs){if(s.kind!=='work'||s.a>T)continue;rep++;
+    L.marker(lane([posAt(o,s.a),posAt(o,s.a+15)],OFF)[0],{icon:icon('rep',rep)}).bindTooltip(`Serie ${rep}${oab?' · '+(s.a<half?'ida':'vuelta'):''} · km ${fmtKm(s.a)}`).addTo(routeLayer)}
+  if(oab) L.marker(o.path[o.path.length-1],{icon:icon('gira','↺')}).bindTooltip(`Gira aquí · km ${fmtKm(half)}`).addTo(routeLayer);
+}
+const posAt=(o,d)=>pointAt(o.full,o.fc,Math.max(0,Math.min(d,o.total)));
 function drawChosen(){
   const o=chosen; if(!o||!segs.length) return;
-  const D=segs[segs.length-1].b, half=D/2;
-  // si cambió el ritmo y la ruta ya no calza, avisa
-  if(Math.abs(o.len-half)>half*0.03){status('El entreno cambió: vuelve a generar rutas');}
-  routeLayer.clearLayers();
-  for(const s of segs){
-    const col=color(s.kind);
-    if(s.a<half){L.polyline(slice(o.path,o.c,s.a,Math.min(s.b,half)),{color:col,weight:6,opacity:.95}).addTo(routeLayer)}
-    if(s.b>half){L.polyline(slice(o.path,o.c,Math.max(0,D-s.b),Math.min(half,D-Math.max(s.a,half))),{color:col,weight:3,opacity:.9,dashArray:'6 6'}).addTo(routeLayer)}
-  }
-  let rep=0;
-  for(const s of segs){if(s.kind!=='work')continue;rep++;const {pt,out}=locate(s.a,D,o);
-    L.marker(pt,{icon:icon('rep',rep)}).bindTooltip(`Serie ${rep} · ${out?'ida':'vuelta'} · km ${fmtKm(s.a)}`).addTo(routeLayer)}
-  const gira=o.path[o.path.length-1];
+  const D=segs[segs.length-1].b, T=o.total, oab=o.type==='oab', half=oab?o.half:Infinity;
+  drawLines();
   const at=segs.find(s=>half>=s.a&&half<=s.b);
   const tHalf=at?at.t0+(half-at.a)/at.dist*at.time:0;
-  L.marker(gira,{icon:icon('gira','↺')}).bindTooltip(`Gira aquí · km ${fmtKm(half)}`).addTo(routeLayer);
-  map.fitBounds(L.latLngBounds(o.path).pad(0.15));
-  status(`Ruta lista · ${fmtKm(D)} km ida y vuelta`);
+  map.fitBounds(L.latLngBounds(o.full).pad(0.15));
+  status(Math.abs(D-o.D)>o.D*0.03?'El entreno cambió: vuelve a generar rutas':`Ruta lista · ${fmtKm(oab?D:T)} km ${oab?'ida y vuelta':'en circuito'}`);
 
   $('sec-cues').hidden=false;
-  $('turnBox').innerHTML=`<b>Gira en el km ${fmtKm(half)}</b><br><span class="hint" style="margin:0">Al minuto ${fmtClock(tHalf)}, durante ${at?nameOf(at).toLowerCase():'el trote'}. Hacia el ${dirName(o.brg)} desde la partida.</span>`;
-  const rows=[]; let turnDone=false;
+  const nTurns=o.turns.filter(t=>t.side!=='u').length;
+  if(oab) $('turnBox').innerHTML=`<b>Gira en el km ${fmtKm(half)}</b><br><span class="hint" style="margin:0">Al minuto ${fmtClock(tHalf)}, durante ${at?nameOf(at).toLowerCase():'el trote'}. Hacia el ${dirName(o.brg)} desde la partida · ${nTurns} giros en total.</span>`;
+  else{
+    const diff=Math.round((T-D)/10)*10;
+    const note=diff>50?`El entreno termina ${diff} m antes de la partida: ese resto es caminando.`:diff<-50?`El circuito es ${-diff} m más corto que el entreno: termina la soltura pasando la partida.`:'Termina justo en la partida.';
+    $('turnBox').innerHTML=`<b>Circuito de ${fmtKm(T)} km</b><br><span class="hint" style="margin:0">Sales hacia el ${dirName(bearing(o.full[0],posAt(o,300)))} · ${nTurns} giros en total. ${note}</span>`;
+  }
+  const rows=[]; let turnDone=!oab;
   for(const s of segs){
     if(!turnDone&&half<s.a+0.01){rows.push(turnRow(half,tHalf));turnDone=true}
-    const {out}=locate(s.a+0.01,D,o);
-    rows.push(`<tr data-d="${s.a}"><td><i class="k-${s.kind}"></i></td><td>${nameOf(s)}<br><span class="dirlbl">${out?'ida':'vuelta'} · ${s.qty}${s.pace?' @ '+fmtPace(s.pace.lo)+(s.pace.hi!==s.pace.lo?'–'+fmtPace(s.pace.hi):''):''}</span></td><td class="n">km ${fmtKm(s.a)}<br>${fmtClock(s.t0)}</td></tr>`);
+    rows.push(`<tr data-d="${s.a}"><td><i class="k-${s.kind}"></i></td><td>${nameOf(s)}<br><span class="dirlbl">${oab?(s.a+0.01<=half?'ida':'vuelta')+' · ':''}${s.qty}${s.pace?' @ '+fmtPace(s.pace.lo)+(s.pace.hi!==s.pace.lo?'–'+fmtPace(s.pace.hi):''):''}</span></td><td class="n">km ${fmtKm(s.a)}<br>${fmtClock(s.t0)}</td></tr>`);
     if(!turnDone&&half>s.a&&half<s.b){rows.push(turnRow(half,tHalf));turnDone=true}
   }
   rows.push(`<tr data-d="${D}"><td><i style="background:var(--fg)"></i></td><td><b>Llegada</b></td><td class="n">km ${fmtKm(D)}<br>${fmtClock(segs[segs.length-1].t1)}</td></tr>`);
   $('cues').innerHTML=rows.join('');
-  $('cues').querySelectorAll('tr').forEach(tr=>tr.onclick=()=>{const d=+tr.dataset.d;map.setView(locate(Math.min(d,D),D,o).pt,16)});
+  $('cues').querySelectorAll('tr').forEach(tr=>tr.onclick=()=>setScrub(+tr.dataset.d,true));
+  showScrub();
 }
 const turnRow=(h,t)=>`<tr class="gira" data-d="${h}"><td><i style="background:var(--tartan);border-radius:50%"></i></td><td>↺ Gira y vuelve</td><td class="n">km ${fmtKm(h)}<br>${fmtClock(t)}</td></tr>`;
+
+/* ---------- Recorrer la ruta ---------- */
+let scrubD=0, scrubMarker=null;
+function hideScrub(){$('scrub').hidden=true;$('mapwrap').classList.remove('has-scrub');if(scrubMarker){scrubMarker.remove();scrubMarker=null}}
+function showScrub(){$('scrub').hidden=false;$('mapwrap').classList.add('has-scrub');setScrub(0,false)}
+// puntos donde pasa algo: giros e inicios de tramo
+function scrubStops(){const o=chosen;return [...new Set([0,...o.turns.map(t=>t.d),...segs.map(s=>s.a).filter(a=>a<o.total),o.total].map(d=>Math.round(d)))].sort((a,b)=>a-b)}
+function setScrub(d,zoom){
+  const o=chosen; if(!o) return;
+  const D=segs[segs.length-1].b; d=scrubD=Math.max(0,Math.min(d,o.total));
+  $('scrubRange').value=Math.round(d/o.total*1000);
+  const p=posAt(o,d);
+  if(!scrubMarker) scrubMarker=L.marker(p,{icon:icon('here',''),interactive:false,zIndexOffset:1000}).addTo(map); else scrubMarker.setLatLng(p);
+  if(zoom) map.setView(p,Math.max(map.getZoom(),16)); else if(!map.getBounds().pad(-0.15).contains(p)) map.panTo(p);
+  const s=segs.find(s=>d>=s.a&&d<s.b);
+  const t=s?s.t0+(d-s.a)/s.dist*s.time:segs[segs.length-1].t1;
+  const where=s?`<i class="k-${s.kind}"></i>${nameOf(s)} · faltan ${fmtM(s.b-d)}`:d>=o.total-1?'Llegada':'Entreno terminado · caminando a la partida';
+  const turns=o.turns, k=turns.findIndex(x=>x.d>d+5);
+  const next=k<0?'Sin más giros: sigue derecho hasta el final':`Giro ${k+1} de ${turns.length}: ${SIDE[turns[k].side]} en ${fmtM(turns[k].d-d)}`;
+  $('scrubInfo').innerHTML=`<span><b>km ${fmtKm(d)}</b> · ${fmtClock(t)} · ${where}</span><span class="nx">${next}</span>`;
+}
+const fmtM=m=>m>=1000?fmtKm(m)+' km':Math.max(0,Math.round(m/10)*10)+' m';
+function scrubStep(dir){const st=scrubStops();const d=dir>0?st.find(x=>x>scrubD+5):[...st].reverse().find(x=>x<scrubD-5);if(d!=null)setScrub(d,true)}
 
 /* ---------- Rutas habituales (trotes de Strava) ---------- */
 const esc=s=>String(s).replace(/[<&>"]/g,c=>({'<':'&lt;','&':'&amp;','>':'&gt;','"':'&quot;'}[c]));
@@ -638,44 +770,55 @@ function decodePoly(str){
 }
 // Agrupa los trotes que salen del mismo lugar y llegan al mismo punto lejano: eso es una "ruta habitual".
 function buildHabits(runs){
-  const groups=[];
+  const outs=[], loops=[];
   for(const a of runs){
     let pts;try{pts=decodePoly(a.poly)}catch{continue}
     if(pts.length<5) continue;
-    const c=cum(pts);let far=0,fd=0;
+    const c=cum(pts), total=c[c.length-1];let far=0,fd=0;
     for(let i=1;i<pts.length;i++){const d=hav(pts[0],pts[i]);if(d>fd){fd=d;far=i}}
     if(c[far]<800) continue;
-    const g=groups.find(g=>hav(g.path[0],pts[0])<250&&hav(g.path[g.path.length-1],pts[far])<350);
-    if(g){g.count++;if(c[far]>g.len){g.path=pts.slice(0,far+1);g.len=c[far]}}
-    else groups.push({count:1,path:pts.slice(0,far+1),len:c[far],last:a.date});
+    // ida habitual: desde la partida hasta el punto más lejano
+    const g=outs.find(g=>hav(g.path[0],pts[0])<250&&hav(g.end,pts[far])<350);
+    if(g){g.count++;if(c[far]>g.len){g.path=pts.slice(0,far+1);g.len=c[far];g.end=pts[far]}}
+    else outs.push({count:1,path:pts.slice(0,far+1),len:c[far],end:pts[far]});
+    // circuito habitual: termina donde parte y la vuelta no repite la ida
+    if(total>1500&&hav(pts[0],pts[pts.length-1])<300){
+      let sep=0;const fs=[.1,.15,.2,.25,.3,.35,.4,.45];
+      for(const f of fs) sep+=hav(pointAt(pts,c,total*f),pointAt(pts,c,total*(1-f)));
+      if(sep/fs.length>150){
+        const l=loops.find(l=>hav(l.path[0],pts[0])<250&&hav(l.end,pts[far])<350&&Math.abs(l.len-total)<total*0.06);
+        if(l) l.count++; else loops.push({loop:true,count:1,path:pts,len:total,end:pts[far]});
+      }
+    }
   }
-  habits=groups.sort((a,b)=>b.count-a.count||b.len-a.len).slice(0,10);
+  habits=[...outs,...loops].sort((a,b)=>b.count-a.count||b.len-a.len).slice(0,12);
 }
-function habitOptions(half){
-  return habits.filter(g=>hav(g.path[0],start)<400&&g.len>=half*0.98).map(g=>{
-    const path=g.len>half?slice(g.path,cum(g.path),0,half):g.path, c=cum(path);
-    return {brg:bearing(path[0],path[path.length-1]),path,c,len:c[c.length-1],habit:g};
-  });
+function habitOptions(D,loop){
+  const near=habits.filter(g=>hav(g.path[0],start)<400);
+  if(loop) return near.filter(g=>g.loop&&g.len>=D*0.95&&g.len<=D*1.1).map(g=>mkLoop(g.path,{habit:g}));
+  const half=D/2;
+  return near.filter(g=>!g.loop&&g.len>=half*0.98).map(g=>mkOab(g.len>half?slice(g.path,cum(g.path),0,half):g.path,{habit:g}));
 }
 function renderHabits(){
   const half=segs.length?segs[segs.length-1].b/2:0;
   $('habs').innerHTML=habits.map((g,i)=>{
-    const short=half&&g.len<half*0.98;
+    const short=!g.loop&&mode()==='oab'&&half&&g.len<half*0.98;
     return `<button class="opt" type="button" data-i="${i}">
-    <span class="dir">${dirName(bearing(g.path[0],g.path[g.path.length-1]))}</span>
-    <span class="meta"><b>${g.label?esc(g.label):'Ida de '+fmtKm(g.len)+' km'}</b><br>${g.count} ${g.count===1?'vez':'veces'} · ida hasta ${fmtKm(g.len)} km${short?' · corta para este entreno':''}</span>
+    <span class="dir">${g.loop?'⟳':dirName(bearing(g.path[0],g.end))}</span>
+    <span class="meta"><b>${g.label?esc(g.label):(g.loop?'Circuito de ':'Ida de ')+fmtKm(g.len)+' km'}</b><br>${g.count} ${g.count===1?'vez':'veces'} · ${g.loop?'circuito de '+fmtKm(g.len)+' km':'ida hasta '+fmtKm(g.len)+' km'}${short?' · corta para este entreno':''}</span>
     <span></span></button>`}).join('');
   $('habs').querySelectorAll('.opt').forEach(b=>b.onclick=()=>{
     const g=habits[+b.dataset.i], half=segs.length?segs[segs.length-1].b/2:0;
     setStart({lat:g.path[0][0],lng:g.path[0][1]});
-    if(half&&g.len<half*0.98){map.fitBounds(L.latLngBounds(g.path).pad(0.15));status(`Esa ruta llega a ${fmtKm(g.len)} km de ida y el entreno pide ${fmtKm(half)}. Busco otras desde ahí…`)}
+    if(g.loop) setMode('loop',false);
+    if(!g.loop&&mode()==='oab'&&half&&g.len<half*0.98){map.fitBounds(L.latLngBounds(g.path).pad(0.15));status(`Esa ruta llega a ${fmtKm(g.len)} km de ida y el entreno pide ${fmtKm(half)}. Busco otras desde ahí…`)}
     generate();
   });
 }
 // Nombra cada ruta por la calle o sector donde giras (Nominatim, de a una por segundo, con caché).
 async function labelHabits(){
   for(const g of habits){
-    const e=g.path[g.path.length-1], key='repes.geo.'+e[0].toFixed(3)+','+e[1].toFixed(3);
+    const e=g.end, key='repes.geo.'+e[0].toFixed(3)+','+e[1].toFixed(3);
     try{
       let name=localStorage.getItem(key);
       if(name==null){
@@ -684,7 +827,7 @@ async function labelHabits(){
         name=a.road||a.pedestrian||a.path||a.park||a.neighbourhood||a.suburb||'';
         localStorage.setItem(key,name); await sleep(1100);
       }
-      if(name){g.label='hasta '+name;renderHabits()}
+      if(name){g.label=(g.loop?'por ':'hasta ')+name;renderHabits()}
     }catch{return}
   }
 }
@@ -722,11 +865,9 @@ async function initStrava(){
 /* ---------- GPX ---------- */
 function gpx(){
   const o=chosen; if(!o) return; const D=segs[segs.length-1].b;
-  const full=o.path.concat(o.path.slice(0,-1).reverse());
-  const esc=s=>s.replace(/[<&>]/g,c=>({'<':'&lt;','&':'&amp;','>':'&gt;'}[c]));
-  const wpts=segs.map(s=>{const {pt}=locate(s.a,D,o);return `<wpt lat="${pt[0].toFixed(6)}" lon="${pt[1].toFixed(6)}"><name>${esc(nameOf(s))}</name></wpt>`});
-  const g=o.path[o.path.length-1];wpts.push(`<wpt lat="${g[0].toFixed(6)}" lon="${g[1].toFixed(6)}"><name>Gira</name></wpt>`);
-  const xml=`<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Ruta de Series" xmlns="http://www.topografix.com/GPX/1/1">\n${wpts.join('\n')}\n<trk><name>Series ${fmtKm(D)} km</name><trkseg>\n${full.map(p=>`<trkpt lat="${p[0].toFixed(6)}" lon="${p[1].toFixed(6)}"/>`).join('\n')}\n</trkseg></trk>\n</gpx>`;
+  const wpts=segs.filter(s=>s.a<=o.total).map(s=>{const pt=posAt(o,s.a);return `<wpt lat="${pt[0].toFixed(6)}" lon="${pt[1].toFixed(6)}"><name>${esc(nameOf(s))}</name></wpt>`});
+  if(o.type==='oab'){const g=o.path[o.path.length-1];wpts.push(`<wpt lat="${g[0].toFixed(6)}" lon="${g[1].toFixed(6)}"><name>Gira</name></wpt>`)}
+  const xml=`<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Ruta de Series" xmlns="http://www.topografix.com/GPX/1/1">\n${wpts.join('\n')}\n<trk><name>Series ${fmtKm(D)} km</name><trkseg>\n${o.full.map(p=>`<trkpt lat="${p[0].toFixed(6)}" lon="${p[1].toFixed(6)}"/>`).join('\n')}\n</trkseg></trk>\n</gpx>`;
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([xml],{type:'application/gpx+xml'}));a.download=`series-${fmtKm(D)}km.gpx`;document.body.appendChild(a);a.click();a.remove();
 }
 
@@ -762,6 +903,17 @@ for(const id of ['pWork','pRec','pEasy']){
 }
 $('gen').onclick=generate;
 $('stravaSync').onclick=syncStrava;
+function setMode(m,run=true){
+  $('modeOab').setAttribute('aria-selected',m!=='loop');$('modeLoop').setAttribute('aria-selected',m==='loop');
+  try{localStorage.setItem('repes.mode',m)}catch{}
+  if(habits.length) renderHabits();
+  if(run) generate();
+}
+$('modeOab').onclick=()=>setMode('oab');$('modeLoop').onclick=()=>setMode('loop');
+try{if(localStorage.getItem('repes.mode')==='loop') setMode('loop',false)}catch{}
+$('scrubRange').addEventListener('input',e=>{if(chosen)setScrub(e.target.value/1000*chosen.total,false)});
+map.on('zoomend',()=>{if(chosen)drawLines()});
+$('scrubPrev').onclick=()=>scrubStep(-1);$('scrubNext').onclick=()=>scrubStep(1);
 $('gpx').onclick=gpx;
 $('geo').onclick=()=>{if(!navigator.geolocation){status('Tu navegador no comparte ubicación');return}
   status('Buscando tu ubicación…');navigator.geolocation.getCurrentPosition(p=>{setStart({lat:p.coords.latitude,lng:p.coords.longitude});map.setView(start,15)},()=>status('No pude obtener tu ubicación. Toca el mapa para fijar la partida.'),{enableHighAccuracy:true,timeout:10000})};
