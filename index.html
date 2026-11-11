@@ -54,7 +54,8 @@ textarea{width:100%;min-height:170px;resize:vertical;border:1px solid var(--line
 .drop strong{color:var(--fg)}
 .drop.over{border-color:var(--accent)}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-button.btn{border:1px solid var(--line);background:var(--surface);color:var(--fg);font:600 .9rem var(--body);padding:9px 14px;border-radius:8px;cursor:pointer}
+.btn{text-decoration:none;display:inline-block}
+button.btn,a.btn{border:1px solid var(--line);background:var(--surface);color:var(--fg);font:600 .9rem var(--body);padding:9px 14px;border-radius:8px;cursor:pointer}
 button.btn.primary{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 button.btn:disabled{opacity:.5;cursor:default}
 button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -189,6 +190,16 @@ footer{font-size:.78rem;color:var(--muted)}
         <button class="btn primary" id="gen" type="button">Generar rutas</button>
       </div>
       <p class="hint">También puedes tocar el mapa para mover el punto de partida.</p>
+    </section>
+
+    <section aria-labelledby="h-hab" id="sec-hab" hidden>
+      <h2 id="h-hab">Mis rutas habituales</h2>
+      <div class="row">
+        <a class="btn" id="stravaBtn" href="/api/strava/login">Conectar Strava</a>
+        <button class="btn" id="stravaSync" type="button" hidden>Actualizar</button>
+      </div>
+      <p class="hint" id="habMsg">Conecta Strava y uso los lugares por donde trotas siempre como rutas de ida y vuelta.</p>
+      <div class="opts" id="habs" style="margin-top:8px"></div>
     </section>
 
     <section aria-labelledby="h-opts" id="sec-opts" hidden>
@@ -517,6 +528,7 @@ function refresh(){
     else{li.push(`<li><i></i><span><b>Repetir ${it.n} veces</b></span><span></span></li>`);it.steps.forEach(s=>li.push(row(s,true)))}
   }
   $('steps').innerHTML=li.join('');
+  if(habits.length) renderHabits();
   if(chosen) drawChosen();
 }
 
@@ -534,37 +546,46 @@ async function buildOption(brg,half){
   if(L>half){path=slice(path,c,0,half);c=cum(path);}
   return {brg,path,c,len:c[c.length-1]};
 }
+let genId=0;
+async function scoreOption(o,D){
+  o.turns=turnsAlong(o.path,o.c);
+  // giros que caen dentro de una serie (en ida o en vuelta)
+  o.workTurns=0;for(const t of o.turns)for(const s of segs)if(s.kind==='work'&&((t>=s.a&&t<=s.b)||(D-t>=s.a&&D-t<=s.b)))o.workTurns++;
+  try{const n=50,pts=[];for(let i=0;i<n;i++)pts.push(pointAt(o.path,o.c,o.len*i/(n-1)));
+    const el=await elevations(pts);let up=0,down=0;for(let i=1;i<el.length;i++){const d=el[i]-el[i-1];if(d>0)up+=d;else down-=d}
+    o.gain=Math.round(up+down); o.netUp=Math.round(el[el.length-1]-el[0]);}catch{o.gain=null}
+  o.score=(o.gain??30)+o.workTurns*6+o.turns.length*1.5;
+}
 async function generate(){
   if(!segs.length){refresh();if(!segs.length)return;}
-  const D=segs[segs.length-1].b, half=D/2;
-  $('gen').disabled=true; routeLayer.clearLayers(); status('Buscando rutas…');
+  const D=segs[segs.length-1].b, half=D/2, id=++genId;
+  $('gen').disabled=true; routeLayer.clearLayers(); options=[]; chosen=null; status('Buscando rutas…');
   try{
+    // primero tus rutas habituales que parten cerca y alcanzan para el entreno: no dependen del ruteo
+    const mine=habitOptions(half);
+    if(mine.length){
+      await Promise.all(mine.map(o=>scoreOption(o,D))); if(id!==genId) return;
+      options=mine; renderOptions(); choose(0);
+    }
     const brgs=[0,60,120,180,240,300];
-    const res=await Promise.allSettled(brgs.map(b=>buildOption(b,half)));
+    const res=await Promise.allSettled(brgs.map(b=>buildOption(b,half))); if(id!==genId) return;
     let opts=res.filter(r=>r.status==='fulfilled'&&r.value).map(r=>r.value);
     // descarta opciones cuyo punto de giro queda casi en el mismo lugar
     const uniq=[];for(const o of opts){const end=o.path[o.path.length-1];if(!uniq.some(u=>hav(u.path[u.path.length-1],end)<300))uniq.push(o)}
-    if(!uniq.length) throw new Error('No encontré rutas peatonales desde ese punto. Prueba moviendo la partida a una calle o parque.');
-    status('Calculando desnivel…');
-    await Promise.all(uniq.map(async o=>{
-      o.turns=turnsAlong(o.path,o.c);
-      // giros que caen dentro de una serie (en ida o en vuelta)
-      o.workTurns=0;for(const t of o.turns)for(const s of segs)if(s.kind==='work'&&((t>=s.a&&t<=s.b)||(D-t>=s.a&&D-t<=s.b)))o.workTurns++;
-      try{const n=50,pts=[];for(let i=0;i<n;i++)pts.push(pointAt(o.path,o.c,o.len*i/(n-1)));
-        const el=await elevations(pts);let up=0,down=0;for(let i=1;i<el.length;i++){const d=el[i]-el[i-1];if(d>0)up+=d;else down-=d}
-        o.gain=Math.round(up+down); o.netUp=Math.round(el[el.length-1]-el[0]);}catch{o.gain=null}
-      o.score=(o.gain??30)+o.workTurns*6+o.turns.length*1.5;
-    }));
-    uniq.sort((a,b)=>a.score-b.score); options=uniq; renderOptions(); choose(0);
-  }catch(e){status(e.message||'Error al generar la ruta');}
-  finally{$('gen').disabled=false}
+    if(!uniq.length&&!mine.length) throw new Error('No encontré rutas peatonales desde ese punto. Prueba moviendo la partida a una calle o parque.');
+    if(!mine.length) status('Calculando desnivel…');
+    await Promise.all(uniq.map(o=>scoreOption(o,D))); if(id!==genId) return;
+    uniq.sort((a,b)=>a.score-b.score); options=[...mine,...uniq]; renderOptions();
+    if(mine.length) $('opts').querySelectorAll('.opt').forEach(b=>b.setAttribute('aria-pressed',options[+b.dataset.i]===chosen)); else choose(0);
+  }catch(e){if(id===genId) status(e.message||'Error al generar la ruta');}
+  finally{if(id===genId) $('gen').disabled=false}
 }
 function renderOptions(){
   $('sec-opts').hidden=false;
   $('opts').innerHTML=options.map((o,i)=>`<button class="opt" type="button" data-i="${i}" aria-pressed="false">
     <span class="dir">${dirName(o.brg)}</span>
-    <span class="meta">Hacia el ${dirName(o.brg)} · desnivel <b>${o.gain==null?'s/d':o.gain+' m'}</b><br>${o.workTurns} giros en series · ${o.turns.length} en total</span>
-    ${i===0?'<span class="tag">Mejor</span>':'<span></span>'}</button>`).join('');
+    <span class="meta">${o.habit?`Tu ruta habitual${o.habit.label?' '+esc(o.habit.label):''} (${o.habit.count}×)`:'Hacia el '+dirName(o.brg)} · desnivel <b>${o.gain==null?'s/d':o.gain+' m'}</b><br>${o.workTurns} giros en series · ${o.turns.length} en total</span>
+    ${o.habit?'<span class="tag">Tuya</span>':options[i-1]?.habit||i===0?'<span class="tag">Mejor</span>':'<span></span>'}</button>`).join('');
   $('opts').querySelectorAll('.opt').forEach(b=>b.onclick=()=>choose(+b.dataset.i));
 }
 function choose(i){chosen=options[i];$('opts').querySelectorAll('.opt').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.i===i));drawChosen();}
@@ -605,6 +626,98 @@ function drawChosen(){
   $('cues').querySelectorAll('tr').forEach(tr=>tr.onclick=()=>{const d=+tr.dataset.d;map.setView(locate(Math.min(d,D),D,o).pt,16)});
 }
 const turnRow=(h,t)=>`<tr class="gira" data-d="${h}"><td><i style="background:var(--tartan);border-radius:50%"></i></td><td>↺ Gira y vuelve</td><td class="n">km ${fmtKm(h)}<br>${fmtClock(t)}</td></tr>`;
+
+/* ---------- Rutas habituales (trotes de Strava) ---------- */
+const esc=s=>String(s).replace(/[<&>"]/g,c=>({'<':'&lt;','&':'&amp;','>':'&gt;','"':'&quot;'}[c]));
+let habits=[];
+function decodePoly(str){
+  const pts=[];let i=0,lat=0,lng=0;
+  const next=()=>{let r=0,sh=0,b;do{b=str.charCodeAt(i++)-63;r|=(b&31)<<sh;sh+=5}while(b>=32&&i<=str.length);return r&1?~(r>>1):r>>1};
+  while(i<str.length){lat+=next();lng+=next();pts.push([lat/1e5,lng/1e5])}
+  return pts;
+}
+// Agrupa los trotes que salen del mismo lugar y llegan al mismo punto lejano: eso es una "ruta habitual".
+function buildHabits(runs){
+  const groups=[];
+  for(const a of runs){
+    let pts;try{pts=decodePoly(a.poly)}catch{continue}
+    if(pts.length<5) continue;
+    const c=cum(pts);let far=0,fd=0;
+    for(let i=1;i<pts.length;i++){const d=hav(pts[0],pts[i]);if(d>fd){fd=d;far=i}}
+    if(c[far]<800) continue;
+    const g=groups.find(g=>hav(g.path[0],pts[0])<250&&hav(g.path[g.path.length-1],pts[far])<350);
+    if(g){g.count++;if(c[far]>g.len){g.path=pts.slice(0,far+1);g.len=c[far]}}
+    else groups.push({count:1,path:pts.slice(0,far+1),len:c[far],last:a.date});
+  }
+  habits=groups.sort((a,b)=>b.count-a.count||b.len-a.len).slice(0,10);
+}
+function habitOptions(half){
+  return habits.filter(g=>hav(g.path[0],start)<400&&g.len>=half*0.98).map(g=>{
+    const path=g.len>half?slice(g.path,cum(g.path),0,half):g.path, c=cum(path);
+    return {brg:bearing(path[0],path[path.length-1]),path,c,len:c[c.length-1],habit:g};
+  });
+}
+function renderHabits(){
+  const half=segs.length?segs[segs.length-1].b/2:0;
+  $('habs').innerHTML=habits.map((g,i)=>{
+    const short=half&&g.len<half*0.98;
+    return `<button class="opt" type="button" data-i="${i}">
+    <span class="dir">${dirName(bearing(g.path[0],g.path[g.path.length-1]))}</span>
+    <span class="meta"><b>${g.label?esc(g.label):'Ida de '+fmtKm(g.len)+' km'}</b><br>${g.count} ${g.count===1?'vez':'veces'} · ida hasta ${fmtKm(g.len)} km${short?' · corta para este entreno':''}</span>
+    <span></span></button>`}).join('');
+  $('habs').querySelectorAll('.opt').forEach(b=>b.onclick=()=>{
+    const g=habits[+b.dataset.i], half=segs.length?segs[segs.length-1].b/2:0;
+    setStart({lat:g.path[0][0],lng:g.path[0][1]});
+    if(half&&g.len<half*0.98){map.fitBounds(L.latLngBounds(g.path).pad(0.15));status(`Esa ruta llega a ${fmtKm(g.len)} km de ida y el entreno pide ${fmtKm(half)}. Busco otras desde ahí…`)}
+    generate();
+  });
+}
+// Nombra cada ruta por la calle o sector donde giras (Nominatim, de a una por segundo, con caché).
+async function labelHabits(){
+  for(const g of habits){
+    const e=g.path[g.path.length-1], key='repes.geo.'+e[0].toFixed(3)+','+e[1].toFixed(3);
+    try{
+      let name=localStorage.getItem(key);
+      if(name==null){
+        const r=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=16&accept-language=es&lat=${e[0]}&lon=${e[1]}`);
+        const a=(await r.json()).address||{};
+        name=a.road||a.pedestrian||a.path||a.park||a.neighbourhood||a.suburb||'';
+        localStorage.setItem(key,name); await sleep(1100);
+      }
+      if(name){g.label='hasta '+name;renderHabits()}
+    }catch{return}
+  }
+}
+function showHabits(runs,msg){
+  buildHabits(runs);renderHabits();
+  $('stravaBtn').hidden=true;$('stravaSync').hidden=false;
+  $('habMsg').textContent=msg||(habits.length?`${runs.length} trotes leídos. Toca una ruta para partir desde ahí; las que calzan con el entreno aparecen primero al generar.`:'No encontré trotes con mapa en tu Strava.');
+  labelHabits();
+  // si aún no mueves la partida, parte desde donde trotas siempre
+  if(habits.length&&start[0]===-33.4006&&start[1]===-70.6015){const h=habits[0].path[0];setStart({lat:h[0],lng:h[1]});map.setView(start,14);generate()}
+}
+async function syncStrava(){
+  $('habMsg').textContent='Leyendo tus trotes de Strava…';
+  try{
+    const r=await fetch('/api/strava/activities');
+    if(r.status===401){$('stravaBtn').hidden=false;$('stravaSync').hidden=true;$('habMsg').textContent='Conecta Strava y uso los lugares por donde trotas siempre como rutas de ida y vuelta.';return}
+    if(r.status===503){$('habMsg').textContent='Falta configurar la app de Strava en Vercel.';return}
+    if(!r.ok) throw 0;
+    const {runs}=await r.json();
+    try{localStorage.setItem('repes.runs',JSON.stringify(runs))}catch{}
+    showHabits(runs);
+  }catch{$('habMsg').textContent='No pude leer Strava ahora. Intenta de nuevo.'}
+}
+async function initStrava(){
+  const flag=new URLSearchParams(location.search).get('strava');
+  if(flag) history.replaceState(null,'',location.pathname);
+  let cached=null;try{cached=JSON.parse(localStorage.getItem('repes.runs')||'null')}catch{}
+  // sin servidor (p. ej. python -m http.server) la sección queda oculta
+  try{const r=await fetch('/api/strava/activities',{method:'HEAD'});if(r.status===404&&!cached)return}catch{if(!cached)return}
+  $('sec-hab').hidden=false;
+  if(flag&&flag!=='ok'){$('habMsg').textContent=flag==='permiso'?'Strava no dio permiso para leer actividades. Vuelve a conectar y deja marcada esa casilla.':'No se pudo conectar con Strava. Intenta de nuevo.';return}
+  if(cached&&!flag) showHabits(cached); else syncStrava();
+}
 
 /* ---------- GPX ---------- */
 function gpx(){
@@ -648,6 +761,7 @@ for(const id of ['pWork','pRec','pEasy']){
   $(id).addEventListener('input',()=>{try{localStorage.setItem('repes.'+id,$(id).value)}catch{};refresh()});
 }
 $('gen').onclick=generate;
+$('stravaSync').onclick=syncStrava;
 $('gpx').onclick=gpx;
 $('geo').onclick=()=>{if(!navigator.geolocation){status('Tu navegador no comparte ubicación');return}
   status('Buscando tu ubicación…');navigator.geolocation.getCurrentPosition(p=>{setStart({lat:p.coords.latitude,lng:p.coords.longitude});map.setView(start,15)},()=>status('No pude obtener tu ubicación. Toca el mapa para fijar la partida.'),{enableHighAccuracy:true,timeout:10000})};
@@ -655,7 +769,7 @@ $('searchForm').onsubmit=async e=>{e.preventDefault();const q=$('q').value.trim(
   try{const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`);const j=await r.json();
     if(!j.length){status('No encontré ese lugar');return}setStart({lat:+j[0].lat,lng:+j[0].lon});map.setView(start,15)}catch{status('La búsqueda falló, intenta de nuevo')}};
 
-$('wo').value=SAMPLE; refresh(); generate();
+$('wo').value=SAMPLE; refresh(); generate(); initStrava();
 </script>
 </body>
 </html>

@@ -13,6 +13,13 @@ Prototipo de factibilidad en un solo archivo (`index.html`, sin build).
 - **Ranking:** desnivel (Open-Meteo Elevation) + giros que caen dentro de las series.
 - **Salida:** mapa Leaflet + hoja de ruta (km y minuto de cada tramo) + GPX descargable.
 
+## Rutas habituales (Strava)
+
+Las funciones de `api/strava/` (Vercel) leen los trotes recientes y la página agrupa los que salen
+y giran en el mismo lugar. Requiere una app en strava.com/settings/api con dominio de callback
+`repes-five.vercel.app` y las variables `STRAVA_CLIENT_ID` y `STRAVA_CLIENT_SECRET` en Vercel.
+La sesión queda en una cookie HttpOnly; no hay base de datos.
+
 ## Probarlo
 
 Sirve la carpeta con un servidor local (abrir el archivo directo puede bloquear mapa y geolocalización):
