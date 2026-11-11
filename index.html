@@ -341,9 +341,27 @@ const dirName=b=>DIRS[Math.round(b/45)%8];
 /* ---------- Servicios ---------- */
 async function routeFoot(a,b){
   const url=`https://routing.openstreetmap.de/routed-foot/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`;
-  const r=await fetch(url); if(!r.ok) throw new Error('ruteo '+r.status);
-  const j=await r.json(); if(!j.routes||!j.routes.length) throw new Error('sin ruta');
+  const j=await routeQueued(url); if(!j.routes||!j.routes.length) throw new Error('sin ruta');
   return j.routes[0].geometry.coordinates.map(([lo,la])=>[la,lo]);
+}
+// routing.openstreetmap.de admite ~1 consulta por segundo: las pedimos de a una, espaciadas,
+// y reintentamos si responde 429 (que llega sin CORS, así que fetch lanza TypeError).
+const ROUTE_GAP=1100; let routeChain=Promise.resolve(), routeLast=0;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function routeQueued(url){
+  const job=routeChain.then(async()=>{
+    for(let k=0;;k++){
+      await sleep(Math.max(0,routeLast+ROUTE_GAP-Date.now())+k*1500);
+      routeLast=Date.now();
+      try{
+        const r=await fetch(url);
+        if(r.ok) return r.json();
+        if(r.status!==429||k>=3) throw new Error('ruteo '+r.status);
+      }catch(e){ if(k>=3||/^ruteo /.test(e.message)) throw e; }
+    }
+  });
+  routeChain=job.catch(()=>{});
+  return job;
 }
 async function elevations(pts){
   const url=`https://api.open-meteo.com/v1/elevation?latitude=${pts.map(p=>p[0].toFixed(5)).join(',')}&longitude=${pts.map(p=>p[1].toFixed(5)).join(',')}`;
