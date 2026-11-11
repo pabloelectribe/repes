@@ -60,6 +60,8 @@ button.btn:disabled{opacity:.5;cursor:default}
 button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 input[type=search],select{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);font:inherit;padding:8px 10px}
 input[type=search]{flex:1;min-width:0}
+.paces label{font-size:.85rem;color:var(--muted);display:flex;align-items:center;gap:6px}
+.paces input{width:4.2em;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);font:inherit;padding:6px 8px;text-align:center}
 .hint{font-size:.85rem;color:var(--muted);margin:6px 0 0}
 .err{color:var(--tartan);font-size:.88rem;margin:6px 0 0}
 
@@ -140,7 +142,8 @@ footer{font-size:.78rem;color:var(--muted)}
         <button role="tab" id="tab-img" aria-selected="false">Pantallazo</button>
       </div>
       <div id="pane-text">
-        <textarea id="wo" spellcheck="false" aria-label="Texto del entreno"></textarea>
+        <textarea id="wo" spellcheck="false" aria-label="Texto del entreno" placeholder="15' suave + 5x(1 km fuerte + 2' trote) + 10' soltura"></textarea>
+        <p class="hint">Pégalo como venga: la descripción del coach («5x(1 milla fuerte + 2'30 suave)», «4x1000 rec 2'») o la estructura copiada de TrainingPeaks.</p>
       </div>
       <div id="pane-img" hidden>
         <label class="drop" id="drop" for="file"><strong>Sube o arrastra el pantallazo</strong><br>Lo leo y paso el texto a la pestaña anterior para que lo revises.</label>
@@ -154,6 +157,12 @@ footer{font-size:.78rem;color:var(--muted)}
           <option value="mid" selected>Medio</option>
           <option value="hi">Lento</option>
         </select>
+      </div>
+      <div class="row paces" style="margin-top:10px">
+        <span class="hint" style="margin:0">Mis ritmos (min/km) si el entreno no los trae</span>
+        <label>Series <input type="text" id="pWork" inputmode="numeric" value="4:55" aria-label="Ritmo de series"></label>
+        <label>Recup. <input type="text" id="pRec" inputmode="numeric" value="6:50" aria-label="Ritmo de recuperación"></label>
+        <label>Suave <input type="text" id="pEasy" inputmode="numeric" value="7:50" aria-label="Ritmo suave"></label>
       </div>
       <p class="err" id="parseErr" hidden></p>
     </section>
@@ -224,8 +233,10 @@ Zone 1
 Zone 1`;
 
 /* ---------- Parser ---------- */
-const QTY_TOKEN = /(\d+(?:[.,]\d+)?)\s*(km|kms|mi|millas?|m|h|hrs?|horas?|minutos?|mins?|segundos?|seg|secs?|s)\b/gi;
-const QTY_TAIL = /((?:\d+(?:[.,]\d+)?\s*(?:km|kms|mi|millas?|m|h|hrs?|horas?|minutos?|mins?|segundos?|seg|secs?|s)\b\s*(?:y|and|,)?\s*)+)$/i;
+const UNIT = "(kil[oó]metros?|kms?|k|millas?|miles?|mi|metros?|mts?|m|horas?|hrs?|h|minutos?|mins?|segundos?|segs?|secs?|s)(?![a-záéíóúñ])";
+const QTY_TOKEN = new RegExp("(\\d+(?:[.,]\\d+)?)\\s*"+UNIT, "gi");
+const QTY_TAIL = new RegExp("((?:\\d+(?:[.,]\\d+)?\\s*"+UNIT+"\\s*(?:y|and|,)?\\s*)+)$", "i");
+const CLOCK_TAIL = /(?:(\d{1,2}):)?(\d{1,3}):(\d{2})$/;
 const PACE = /(\d{1,2})[:.](\d{2})\s*(?:[–—-]\s*(\d{1,2})[:.](\d{2}))?\s*(min\s*\/\s*(km|mi)|\/\s*(km|mi))?/i;
 const num = s => parseFloat(String(s).replace(',', '.'));
 
@@ -233,9 +244,9 @@ function parseQty(str){
   let t=0, d=0, any=false, m; QTY_TOKEN.lastIndex=0;
   while((m=QTY_TOKEN.exec(str))){
     any=true; const v=num(m[1]), u=m[2].toLowerCase();
-    if(u.startsWith('km')) d+=v*1000;
-    else if(u==='m') d+=v;
-    else if(u==='mi'||u.startsWith('milla')) d+=v*1609.344;
+    if(u.startsWith('k')) d+=v*1000;
+    else if(/^(m|mts?|metros?)$/.test(u)) d+=v;
+    else if(u==='mi'||u.startsWith('mill')||u.startsWith('mile')) d+=v*1609.344;
     else if(u.startsWith('h')) t+=v*3600;
     else if(u.startsWith('min')) t+=v*60;
     else t+=v;
@@ -253,25 +264,111 @@ function parsePace(str){
 }
 function kindOf(label){
   const l=(label||'').toLowerCase();
-  if(/warm|calent|entrada/.test(l)) return 'warm';
-  if(/cool|soltura|enfri|calma|vuelta/.test(l)) return 'cool';
-  if(/hard|work|active|interval|fuerte|r[aá]pid|serie|intens|tempo/.test(l)) return 'work';
-  if(/easy|recov|rest|recup|suave|descanso|trote|pausa/.test(l)) return 'recover';
+  if(/warm|calent|entrada|\bwu\b/.test(l)) return 'warm';
+  if(/cool|soltura|soltar|enfri|calma|\bcd\b/.test(l)) return 'cool';
+  if(/hard|work|active|interval|fuerte|r[aá]pid|serie|intens|tempo|umbral|esfuerzo|ritmo|progres|\bz[3-6]|\bz5[abc]|sprint|all ?out|carrera|\b(3|5|10|21|42)k\b/.test(l)) return 'work';
+  if(/easy|recov|rest|\brec|suave|descanso|trote|pausa|regener|camina|lento|\bz[12]\b|f[aá]cil|jog/.test(l)) return 'recover';
   return 'other';
 }
 function parseLine(line){
   // devuelve {qty, pace, prefix} si es una línea de datos
   const at=line.indexOf('@');
   const left=(at>=0?line.slice(0,at):line).trim();
-  const tail=left.match(QTY_TAIL); if(!tail) return null;
+  let tail=left.match(QTY_TAIL), clock=null;
+  if(!tail){ if(at<0) return null; clock=left.match(CLOCK_TAIL); if(!clock) return null; tail=clock; }
   const prefix=left.slice(0,tail.index).trim();
   if(at<0 && prefix) return null;              // sin @, la línea debe ser sólo cantidad
   if(prefix && prefix.split(/\s+/).length>4) return null;
-  const qty=parseQty(tail[1]); if(!qty) return null;
+  const qty=clock?{time:(+(clock[1]||0))*3600+ +clock[2]*60+ +clock[3]}:parseQty(tail[1]); if(!qty) return null;
   const pace=at>=0?parsePace(line.slice(at+1)):null;
   return {qty,pace,prefix};
 }
 function parseWorkout(text){
+  text=normalize(text);
+  const structured=text.split(/\n/).some(l=>l.includes('@')&&parseLine(l.trim().replace(/^\d+[.)]\s+/,'')));
+  return structured?parseStructured(text):parseFree(text);
+}
+// 15' → 15 min, 2'30" → 2 min 30 s, × → x
+function normalize(text){
+  return text.replace(/\r/g,'').replace(/[×✕✖*]/g,'x').replace(/[\[{]/g,'(').replace(/[\]}]/g,')')
+    .replace(/(\d)\s*[\u2032\u2019'´]\s*(\d{1,2})\s*(?:[\u2033\u201d"]|'')?(?![\d:.,a-z])/gi,'$1 min $2 s ')
+    .replace(/(\d)\s*(?:[\u2033\u201d"]|'')/g,'$1 s ')
+    .replace(/(\d)\s*h\s*(\d{1,2})(?![\d:.,a-z])/gi,'$1 h $2 min ')
+    .replace(/(\d)\s*[\u2032\u2019'´]/g,'$1 min ');
+}
+/* Texto libre: "5x(1 milla fuerte + 2'30 suave)", "15' + 4x1000 rec 2' + 10' soltura", "3 km a 5:10"… */
+const PACE_FREE=/(@\s*|\ba\s+|\britmo\s+(?:de\s+)?)?(\d{1,2}):(\d{2})(?:\s*[–—-]\s*(\d{1,2}):(\d{2}))?(\s*(?:min\s*)?\/\s*(km|mi)\b)?/gi;
+const REC_WORD=/(^|[\s(,])(rec|pausa|descanso|desc\b|r\s*[:\/]|con\b|c\/|trotando|caminando|jog)/i;
+function splitTop(str,isSep){
+  const out=[];let depth=0,cur='';
+  for(let i=0;i<str.length;i++){const ch=str[i];
+    if(ch==='(')depth++; else if(ch===')')depth=Math.max(0,depth-1);
+    if(depth===0&&isSep(ch,str[i-1],str[i+1])){out.push(cur);cur=''} else cur+=ch;}
+  out.push(cur);return out;
+}
+function stepsOf(str,inRep){
+  const out=[];
+  for(let piece of splitTop(str,ch=>ch==='+')){
+    const paces=[];
+    piece=piece.replace(/(\d{1,2}):(\d{2}):(\d{2})/g,(m,h,mi,se)=>` ${+h*3600+ +mi*60+ +se} s `)
+      .replace(PACE_FREE,(m,pre,a1,a2,b1,b2,suf,u)=>{
+        if(!pre&&!suf) return ` ${+a1*60+ +a2} s `;            // mm:ss suelto = duración
+        let lo=+a1*60+ +a2, hi=b1?+b1*60+ +b2:lo; if((u||'').toLowerCase()==='mi'){lo/=1.609344;hi/=1.609344}
+        if(lo>hi)[lo,hi]=[hi,lo]; paces.push({lo,hi}); return ` §${paces.length-1}§ `;});
+    const toks=[];let m;QTY_TOKEN.lastIndex=0;
+    while((m=QTY_TOKEN.exec(piece))) toks.push({a:m.index,b:m.index+m[0].length,time:!/^(k|m$|mt|metro|mi$|mill|mile)/i.test(m[2])});
+    const runs=[];
+    for(const t of toks){const last=runs[runs.length-1];
+      if(last&&last.time&&t.time&&/^\s*(y|and)?\s*$/i.test(piece.slice(last.b,t.a))) last.b=t.b; else runs.push({...t});}
+    runs.forEach((r,i)=>{
+      // el texto entre dos cantidades va con la anterior, salvo desde "rec/pausa/con…", que va con la siguiente
+      const cut=g=>{const k=g.search(REC_WORD);return k<0?g.length:k};
+      let before=piece.slice(i?runs[i-1].b:0,r.a), after=piece.slice(r.b,i+1<runs.length?runs[i+1].a:piece.length);
+      if(i) before=before.slice(cut(before));
+      if(i+1<runs.length) after=after.slice(0,cut(after));
+      const txt=before+' '+after, pm=txt.match(/§(\d+)§/);
+      const label=txt.replace(/§\d+§/g,' ').replace(/[()]/g,' ').replace(/\s+/g,' ').replace(/^[\s:.\-–]+|[\s:.\-–]+$/g,'').slice(0,40);
+      const qty=parseQty(piece.slice(r.a,r.b)); if(!qty||!(qty.dist||qty.time)) return;
+      let kind=kindOf(label); if(inRep&&kind==='other') kind=out.length?'recover':'work';
+      out.push({type:'step',label,kind,...qty,pace:pm?paces[+pm[1]]:null});
+    });
+  }
+  return out;
+}
+function parseFree(text){
+  const items=[];
+  const REP=/(\d+)\s*(?:x|veces(?:\s+de)?|series(?:\s+de)?|repeticiones(?:\s+de)?|reps?(?:\s+de)?)\s*(?=\(|\d)/i;
+  const clause=c=>{
+    const m=c.match(REP);
+    if(!m){items.push(...stepsOf(c,false));return}
+    items.push(...stepsOf(c.slice(0,m.index),false));
+    let rest=c.slice(m.index+m[0].length), body, tail='';
+    if(rest[0]==='('){let d=0,i=0;for(;i<rest.length;i++){if(rest[i]==='(')d++;else if(rest[i]===')'&&--d===0)break}
+      body=rest.slice(1,i);tail=rest.slice(i+1);}
+    else{
+      rest=rest.replace(new RegExp("^(\\d{3,5})(?!\\d|[.,:]\\d|\\s*"+UNIT+")","i"),'$1 m ');
+      const parts=splitTop(rest,ch=>ch==='+');let k=1;
+      while(k<parts.length&&!['warm','cool'].includes(kindOf(parts[k])))k++;
+      body=parts.slice(0,k).join('+');tail=parts.slice(k).join('+');
+    }
+    const steps=stepsOf(body,true);
+    if(steps.length) items.push({type:'repeat',n:+m[1],steps});
+    if(tail.trim()) clause(tail);
+  };
+  for(const raw of text.split(/\n/)){
+    const line=raw.trim().replace(/^[-•·]\s*/,'').replace(/^\d+[.)]\s+/,''); if(!line) continue;
+    splitTop(line,(ch,p,n)=>ch===';'||(ch===','&&!(/\d/.test(p||'')&&/\d/.test(n||'')))).forEach(clause);
+  }
+  // sin etiqueta clara: lo primero antes de las series es calentamiento y lo último, soltura
+  const ri=items.findIndex(it=>it.type==='repeat');
+  if(ri>=0){
+    const first=items[0], last=items[items.length-1];
+    if(ri>0&&first.type==='step'&&['other','recover'].includes(first.kind)) first.kind='warm';
+    if(last.type==='step'&&items.indexOf(last)>ri&&['other','recover'].includes(last.kind)) last.kind='cool';
+  }
+  return items;
+}
+function parseStructured(text){
   const items=[]; let rep=null, outer=0, inner=0, label=null, lnum=null;
   for(let raw of text.split(/\r?\n/)){
     let line=raw.trim(); if(!line) continue;
@@ -293,8 +390,15 @@ function parseWorkout(text){
   // limpia repeticiones vacías
   return items.filter(it=>it.type==='step'||it.steps.length);
 }
+// ritmos propios (seg/km) para tramos sin ritmo; se guardan en el navegador
+const PACE_IDS={work:'pWork',recover:'pRec'};
+function myPace(kind){
+  const v=(document.getElementById(PACE_IDS[kind]||'pEasy').value||'').trim().match(/^(\d{1,2})[:.,](\d{2})$/);
+  const p=v?+v[1]*60+ +v[2]:0;
+  return p>=150&&p<=900?p:(kind==='work'?295:kind==='recover'?410:470);
+}
 function paceFor(step,basis){
-  if(!step.pace) return 360;
+  if(!step.pace) return myPace(step.kind);
   return basis==='lo'?step.pace.lo:basis==='hi'?step.pace.hi:(step.pace.lo+step.pace.hi)/2;
 }
 function expand(items,basis){
@@ -401,14 +505,14 @@ function refresh(){
   const items=parseWorkout($('wo').value);
   segs=expand(items,$('basis').value);
   $('parseErr').hidden=!!segs.length;
-  if(!segs.length){$('parseErr').textContent='No encontré tramos. Revisa que cada paso tenga duración o distancia, por ejemplo "15 min @ 07:34 – 08:12 min/km".';}
+  if(!segs.length){$('parseErr').textContent='No encontré tramos. Cada paso necesita una duración o distancia, por ejemplo «15 min suave + 4x(1 km fuerte + 2 min trote)».';}
   const D=segs.length?segs[segs.length-1].b:0, T=segs.length?segs[segs.length-1].t1:0;
   $('tDist').textContent=D?fmtKm(D):'–';$('tTime').textContent=T?fmtClock(T):'–';$('tHalf').textContent=D?fmtKm(D/2):'–';
   $('strip').innerHTML=segs.map(s=>`<i class="k-${s.kind}" style="flex:${s.time}" title="${nameOf(s)}"></i>`).join('');
   // lista compacta: agrupa por bloque original
   const li=[];
   for(const it of items){
-    const row=(s,ind)=>`<li><i class="k-${s.kind}"></i><span>${ind?'&nbsp;&nbsp;':''}${s.label||LABEL[s.kind]} · ${s.dist?fmtKm(s.dist)+' km':fmtDur(s.time)}</span><span class="num">${s.pace?fmtPace(s.pace.lo)+(s.pace.hi!==s.pace.lo?'–'+fmtPace(s.pace.hi):'')+' /km':'sin ritmo'}</span></li>`;
+    const row=(s,ind)=>`<li><i class="k-${s.kind}"></i><span>${ind?'&nbsp;&nbsp;':''}${s.label||LABEL[s.kind]} · ${s.dist?fmtKm(s.dist)+' km':fmtDur(s.time)}</span><span class="num">${s.pace?fmtPace(s.pace.lo)+(s.pace.hi!==s.pace.lo?'–'+fmtPace(s.pace.hi):'')+' /km':'≈'+fmtPace(myPace(s.kind))+' /km'}</span></li>`;
     if(it.type==='step') li.push(row(it,false));
     else{li.push(`<li><i></i><span><b>Repetir ${it.n} veces</b></span><span></span></li>`);it.steps.forEach(s=>li.push(row(s,true)))}
   }
@@ -539,6 +643,10 @@ drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over'
 document.addEventListener('paste',e=>{const f=[...(e.clipboardData?.files||[])].find(f=>f.type.startsWith('image/'));if(f){e.preventDefault();tab('img');ocr(f)}});
 let tmr;$('wo').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(refresh,250)});
 $('basis').onchange=refresh;
+for(const id of ['pWork','pRec','pEasy']){
+  try{const v=localStorage.getItem('repes.'+id);if(v)$(id).value=v}catch{}
+  $(id).addEventListener('input',()=>{try{localStorage.setItem('repes.'+id,$(id).value)}catch{};refresh()});
+}
 $('gen').onclick=generate;
 $('gpx').onclick=gpx;
 $('geo').onclick=()=>{if(!navigator.geolocation){status('Tu navegador no comparte ubicación');return}
